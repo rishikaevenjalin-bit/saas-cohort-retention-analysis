@@ -1,0 +1,35 @@
+WITH first_sub AS (
+    SELECT account_id, start_date, plan_tier, seats, mrr_amount,
+           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY start_date) AS rn
+    FROM '../data/raw/ravenstack_subscriptions.csv'
+),
+cohorts AS (
+    SELECT account_id, DATE_TRUNC('month', start_date) AS cohort_month,
+           plan_tier AS starting_plan, seats AS starting_seats, mrr_amount AS starting_mrr
+    FROM first_sub WHERE rn = 1
+),
+first_churn AS (
+    SELECT account_id, MIN(churn_date) AS first_churn_date
+    FROM '../data/raw/ravenstack_churn_events.csv'
+    GROUP BY account_id
+),
+churn_reason AS (
+    SELECT ce.account_id, ce.reason_code
+    FROM '../data/raw/ravenstack_churn_events.csv' ce
+    JOIN first_churn fc ON ce.account_id = fc.account_id AND ce.churn_date = fc.first_churn_date
+)
+SELECT
+    a.account_id, a.industry, a.country, a.referral_source,
+    c.cohort_month, c.starting_plan, c.starting_seats, c.starting_mrr,
+    CASE WHEN fc.first_churn_date IS NULL THEN 'Active' ELSE 'Churned' END AS current_status,
+    fc.first_churn_date,
+    cr.reason_code AS churn_reason,
+    CASE
+        WHEN fc.first_churn_date IS NULL THEN DATE_DIFF('month', c.cohort_month, DATE '2024-12-01')
+        ELSE DATE_DIFF('month', c.cohort_month, DATE_TRUNC('month', fc.first_churn_date))
+    END AS months_active
+FROM '../data/raw/ravenstack_accounts.csv' a
+JOIN cohorts c ON a.account_id = c.account_id
+LEFT JOIN first_churn fc ON a.account_id = fc.account_id
+LEFT JOIN churn_reason cr ON a.account_id = cr.account_id
+ORDER BY c.cohort_month, a.account_id;

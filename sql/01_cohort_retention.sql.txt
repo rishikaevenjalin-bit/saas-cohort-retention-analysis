@@ -1,0 +1,40 @@
+WITH cohorts AS (
+    SELECT s.account_id, DATE_TRUNC('month', MIN(s.start_date)) AS cohort_month
+    FROM '../data/raw/ravenstack_subscriptions.csv' s
+    GROUP BY s.account_id
+),
+first_churn AS (
+    SELECT account_id, MIN(churn_date) AS first_churn_date
+    FROM '../data/raw/ravenstack_churn_events.csv'
+    GROUP BY account_id
+),
+calendar AS (
+    SELECT c.account_id, c.cohort_month,
+           UNNEST(GENERATE_SERIES(c.cohort_month, DATE '2024-12-01', INTERVAL 1 MONTH)) AS calendar_month
+    FROM cohorts c
+),
+retained AS (
+    SELECT
+        cal.account_id, cal.cohort_month, cal.calendar_month,
+        DATE_DIFF('month', cal.cohort_month, cal.calendar_month) AS period_number,
+        CASE
+            WHEN fc.first_churn_date IS NULL THEN 1
+            WHEN cal.calendar_month < DATE_TRUNC('month', fc.first_churn_date) THEN 1
+            ELSE 0
+        END AS is_retained
+    FROM calendar cal
+    LEFT JOIN first_churn fc ON cal.account_id = fc.account_id
+),
+cohort_size AS (
+    SELECT cohort_month, COUNT(DISTINCT account_id) AS num_accounts
+    FROM cohorts GROUP BY cohort_month
+)
+SELECT
+    r.cohort_month, r.period_number,
+    SUM(r.is_retained) AS active_accounts,
+    cs.num_accounts AS cohort_size,
+    ROUND(SUM(r.is_retained) * 100.0 / cs.num_accounts, 1) AS retention_pct
+FROM retained r
+JOIN cohort_size cs ON r.cohort_month = cs.cohort_month
+GROUP BY r.cohort_month, r.period_number, cs.num_accounts
+ORDER BY r.cohort_month, r.period_number;
